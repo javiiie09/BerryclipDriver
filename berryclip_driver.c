@@ -36,16 +36,32 @@
 
 #define GPIO_SPEAKER 4
 
-#define BUTTONS_BUFF_SIZE 16
-
-static DECLARE_WAIT_QUEUE_HEAD(buttons_waitqueue);
+#define BUTTONS_BUFF_SIZE 64
 
 int n_gpios_conf[NUM_GPIOS];
 
 int leds_pin[] = {GPIO_RED_LED1, GPIO_RED_LED2, GPIO_YELLOW_LED1, GPIO_YELLOW_LED2, GPIO_GREEN_LED1, GPIO_GREEN_LED2};
 int gpios[] = {GPIO_RED_LED1, GPIO_RED_LED2, GPIO_YELLOW_LED1, GPIO_YELLOW_LED2, GPIO_GREEN_LED1, GPIO_GREEN_LED2, GPIO_BUTTON1, GPIO_BUTTON2, GPIO_SPEAKER};
 char *gpio_name[] = {"red_led1", "red_led2", "yellow_led1", "yellow_led2", "green_led1", "green_led2", "button1", "button2", "speaker"};
+
 static uint8_t leds_state = 0;
+
+// === GLOBAL BUTTONS VARIABLES ===
+
+static DECLARE_WAIT_QUEUE_HEAD(buttons_waitqueue);
+
+static char buffer[BUTTONS_BUFF_SIZE];
+static int buffer_head = 0;
+static int buffer_tail = 0;
+
+DEFINE_SEMAPHORE(buttons_sem, 1);
+static int buttons_in_use = 0;
+
+static struct workqueue_struct *buttons_wq;
+static struct delayed_work debounce_work;
+static int irq_b1, irq_b2;
+
+static int debounce_time_ms = 50;
 
 
 // === LEDS DEVICE FUNCTIONS ===
@@ -55,8 +71,6 @@ static ssize_t leds_read(struct file *file, char __user *buf, size_t len, loff_t
 
     if(*ppos == 0) *ppos+=1;
     else return 0;
-
-    printk(KERN_NOTICE "Val salida = %d\n", val);
 
     return copy_to_user(buf, &val, 1) ? -EFAULT : 1;
 }
@@ -71,8 +85,6 @@ static ssize_t leds_write(struct file *file, const char __user *buf, size_t len,
     if(copy_from_user(&val, buf, 1))
 	return -EFAULT;
 
-    printk(KERN_NOTICE "Val introducido = %c  %d\n", val, (int)val);
-
     uint8_t type = (val & 0xC0) >> 6;
     uint8_t bits = val & 0x3F;
 
@@ -82,8 +94,6 @@ static ssize_t leds_write(struct file *file, const char __user *buf, size_t len,
 	case 2: leds_state &= ~bits; break;
 	case 3: leds_state ^= bits; break;
     }
-
-    printk(KERN_NOTICE "Leds State = %d\n", leds_state);
 
     for(int i = 0; i < NUM_LEDS; ++i){
 	gpio_set_value(GPIO_DEFAULT + leds_pin[i], (leds_state >> i) & 1);
@@ -96,23 +106,36 @@ static ssize_t leds_write(struct file *file, const char __user *buf, size_t len,
 
 static int buttons_open(struct inode *inode, struct file *flip)
 {
-    if(flip->f_flags & O_NONBLOCK)
-    {
+    if(down_interruptible(&buttons_sem)) return -ERESTARTSYS;
 
+    if(flip->f_flags & O_NONBLOCK){
+	up(&buttons_sem);
+	return -EBUSY;
     }else{
-
+        wait_event_interruptible(buttons_waitqueue, buttons_in_use == 0);
     }
+    buttons_in_use = 1;
     return 0;
 }
 
 static int buttons_release(struct inode *inode, struct file *flip)
 {
+    up(&buttons_sem);
     return 0;
 }
 
 static ssize_t buttons_read(struct file *file, char __user *buf, size_t len, loff_t *ppos)
 {
-    return 0;
+    if(buffer_head == buffer_tail){
+	if(file->f_flags & O_NONBLOCK) return -EAGAIN;
+
+	if(wait_event_interruptible(buttons_waitqueue, buffer_head != buffer_tail)) return -ERESTARTSYS;
+    }
+    if(copy_to_user(buf, &buffer[buffer_tail], 1)) return -EFAULT;
+
+    buffer_tail = (buffer_tail + 1) % sizeof(buffer);
+
+    return 1;
 }
 
 //========= SPEAKER DEVICE FUNCTIONS =========
@@ -122,7 +145,6 @@ static ssize_t speaker_write(struct file *file, const char __user *buf, size_t l
     char val;
 
     if(copy_from_user(&val, buf, 1)) return -EFAULT;
-	printk(KERN_NOTICE "Val speaker = %d\n", val);
 
     gpio_set_value(GPIO_DEFAULT + GPIO_SPEAKER, val != '0' ? 1 : 0);
 
@@ -178,6 +200,32 @@ static struct miscdevice speaker_dev =
     .mode       = S_IWUGO,
 };
 
+// === IRQ AND WORKQUEUE FUNCTIONS ===
+
+static irqreturn_t button_irq_handler(int irq, void *dev_id)
+{
+    queue_delayed_work(buttons_wq, &debounce_work, msecs_to_jiffies(debounce_time_ms));
+    return IRQ_HANDLED;
+}
+
+static void debounce_work_func(struct work_struct *work)
+{
+    if(!gpio_get_value(GPIO_BUTTON1)){
+    	buffer[buffer_head] = '1';
+	buffer_head = (buffer_head + 1) % sizeof(buffer);
+    }
+
+    if(!gpio_get_value(GPIO_BUTTON2)){
+    	buffer[buffer_head] = '2';
+	buffer_head = (buffer_head + 1) % sizeof(buffer);
+    }
+
+    wake_up_interruptible(&buttons_waitqueue);
+}
+
+
+// === DEVICES CONFIGURATION ===
+
 static void dev_config_mesg(struct miscdevice dev, char *name, int ret)
 {
     if(ret < 0)
@@ -193,7 +241,6 @@ static int r_devices_config(void)
 {
     int ret = 0;
     ret = misc_register(&leds_dev);
-
     dev_config_mesg(leds_dev, DEVICE_LEDS, ret);
 
     ret = misc_register(&buttons_dev);
@@ -205,30 +252,11 @@ static int r_devices_config(void)
     return ret;
 }
 
+// === GPIO CONFIGURATION ===
+
 static int r_GPIO_config(void)
 {
     int ret = 0;
-
-    /*for (int i = 0; i < NUM_LEDS; ++i){
-	ret = gpio_request(GPIO_DEFAULT + leds_pin[i], "led");
-	if(ret < 0){
-	    printk(KERN_ERR "GPIO request failure: led with GPIO %d", GPIO_DEFAULT + leds_pin[i]);
-	    return ret;
-	}
-	ret = gpio_direction_output(GPIO_DEFAULT + leds_pin[i], 0);
-	if(ret < 0){
-            printk(KERN_ERR "GPIO set direction output failure: led with GPIO %d", GPIO_DEFAULT + leds_pin[i]);
-            return ret;
-        }
-    }
-
-    gpio_request(GPIO_DEFAULT + GPIO_SPEAKER, "speaker");
-    gpio_direction_output(GPIO_DEFAULT + GPIO_SPEAKER, 0);
-
-    gpio_request(GPIO_DEFAULT + GPIO_BUTTON1, "button1");
-    gpio_request(GPIO_DEFAULT + GPIO_BUTTON2, "button2");
-    gpio_direction_output(GPIO_DEFAULT + GPIO_BUTTON1, 0);
-    gpio_direction_output(GPIO_DEFAULT + GPIO_BUTTON2, 0);*/
 
     for(int i = 0; i < NUM_GPIOS; ++i){
 	ret = gpio_request(GPIO_DEFAULT + gpios[i], gpio_name[i]);
@@ -236,13 +264,30 @@ static int r_GPIO_config(void)
 	    printk(KERN_ERR "GPIO request failure: %s with GPIO %d", gpio_name[i], GPIO_DEFAULT + gpios[i]);
 	    return ret;
 	}
-	ret = gpio_direction_output(GPIO_DEFAULT + gpios[i], 0);
-	if(ret < 0){
-            printk(KERN_ERR "GPIO set direction output failure: %s with GPIO %d", gpio_name[i] ,GPIO_DEFAULT + gpios[i]);
-            return ret;
-        }
+	if(strcmp(gpio_name[i], "button1") != 0 && strcmp(gpio_name[i], "button2") != 0){
+	    ret = gpio_direction_output(GPIO_DEFAULT + gpios[i], 0);
+	    if(ret < 0){
+            	printk(KERN_ERR "GPIO set direction output failure: %s with GPIO %d", gpio_name[i] ,GPIO_DEFAULT + gpios[i]);
+            	return ret;
+            }
+	}else{
+	    ret = gpio_direction_input(GPIO_DEFAULT + gpios[i]);
+	    if(ret < 0){
+            	printk(KERN_ERR "GPIO set direction input failure: %s with GPIO %d", gpio_name[i] ,GPIO_DEFAULT + gpios[i]);
+            	return ret;
+            }
+	}
 	n_gpios_conf[i] = 1;
     }
+
+    irq_b1 = gpio_to_irq(GPIO_BUTTON1);
+    irq_b2 = gpio_to_irq(GPIO_BUTTON2);
+
+    ret = request_irq(irq_b1, button_irq_handler, IRQF_TRIGGER_FALLING, "btn1_irq", NULL);
+    ret = request_irq(irq_b2, button_irq_handler, IRQF_TRIGGER_FALLING, "btn2_irq", NULL);
+
+    INIT_DELAYED_WORK(&debounce_work, debounce_work_func);
+    buttons_wq = create_singlethread_workqueue("buttons_wq");
 
     return 0;
 }
@@ -251,6 +296,11 @@ static int r_GPIO_config(void)
 
 static void cleanup_driver(void)
 {
+
+    destroy_workqueue(buttons_wq);
+
+    free_irq(irq_b1, NULL);
+    free_irq(irq_b2, NULL);
 
     printk(KERN_NOTICE "Cleaning up module '%s'\n", KBUILD_MODNAME);
 

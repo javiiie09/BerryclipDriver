@@ -106,7 +106,7 @@ static ssize_t leds_write(struct file *file, const char __user *buf, size_t len,
     return 1;
 }
 
-static loff_t leds_llseek(struct file *file, loff_t offset, int whence)
+static loff_t leds_lseek(struct file *file, loff_t offset, int whence)
 {
     loff_t new_pos = 0;
 

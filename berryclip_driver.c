@@ -64,7 +64,7 @@ static int irq_b1 = -1, irq_b2 = -1;
 
 static int debounce = 50;
 
-module_param(debounce, int, S_IRUGO)
+module_param(debounce, int, S_IRUGO);
 
 
 // === LEDS DEVICE FUNCTIONS ===
@@ -75,15 +75,15 @@ static ssize_t leds_read(struct file *file, char __user *buf, size_t len, loff_t
     if(*ppos == 0) *ppos+=1;
     else return 0;
 
-    return copy_to_user(buf, &val, 1) ? -EFAULT : 1;
+    printk(KERN_NOTICE "Leds lectura val %d\n", val);
+    printk(KERN_NOTICE "Leds lectura buff %s\n", buf);
+
+    return (copy_to_user(buf, &val, 1)) ? -EFAULT : 1;
 }
 
 static ssize_t leds_write(struct file *file, const char __user *buf, size_t len, loff_t *ppos)
 {
     uint8_t val;
-
-    if(*ppos == 0) *ppos+=1;
-    else return len;
 
     if(copy_from_user(&val, buf, 1)) return -EFAULT;
 
@@ -91,17 +91,45 @@ static ssize_t leds_write(struct file *file, const char __user *buf, size_t len,
     uint8_t bits = val & 0x3F;
 
     switch(type){
-	case 0: leds_state = bits; break;
-	case 1: leds_state |= bits; break;
-	case 2: leds_state &= ~bits; break;
-	case 3: leds_state ^= bits; break;
+        case 0: leds_state = bits; break;
+        case 1: leds_state |= bits; break;
+        case 2: leds_state &= ~bits; break;
+        case 3: leds_state ^= bits; break;
     }
+
+    printk(KERN_NOTICE "%s\n", buf);
 
     for(int i = 0; i < ARRAY_SIZE(leds_pin); ++i){
 	    gpio_set_value(GPIO_DEFAULT + leds_pin[i], (leds_state >> i) & 1);
     }
 
     return 1;
+}
+
+static loff_t leds_llseek(struct file *file, loff_t offset, int whence)
+{
+    loff_t new_pos = 0;
+
+    switch (whence) {
+        case SEEK_SET:
+            new_pos = offset;
+            break;
+        case SEEK_CUR:
+            new_pos = file->f_pos + offset;
+            break;
+        case SEEK_END:
+            new_pos = 1 + offset;
+            break;
+        default:
+            return -EINVAL;
+    }
+
+    if (new_pos < 0 || new_pos > 1)
+        new_pos = 0; // No se puede ir más allá de 1 byte
+        //return -EINVAL;
+
+    file->f_pos = new_pos;
+    return new_pos;
 }
 
 //========= BUTTONS DEVICE FUNCTIONS =========
@@ -159,6 +187,7 @@ static const struct file_operations leds_fops =
     .owner	= THIS_MODULE,
     .read	= leds_read,
     .write	= leds_write,
+    .llseek  = leds_lseek,
 };
 
 static const struct file_operations buttons_fops =

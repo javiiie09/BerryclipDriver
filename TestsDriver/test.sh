@@ -1,8 +1,8 @@
 #!/bin/bash
 
-make MODULE=berryclip_driver compile
+#make MODULE=berryclip_driver compile
 
-sudo insmod berryclip_driver.ko
+#sudo insmod berryclip_driver.ko
 
 DELAY=0.2
 
@@ -25,6 +25,6 @@ echo "Prueba completada"
 
 ./buttons
 
-sudo rmmod berryclip_driver
+#sudo rmmod berryclip_driver
 
-make MODULE=berryclip_driver vclean
+#make MODULE=berryclip_driver vclean

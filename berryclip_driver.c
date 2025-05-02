@@ -64,7 +64,7 @@ static int irq_b1 = -1, irq_b2 = -1;
 
 static int debounce = 50;
 
-module_param(debounce, int, S_IRUGO)
+module_param(debounce, int, S_IRUGO);
 
 
 // === LEDS DEVICE FUNCTIONS ===

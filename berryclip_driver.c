@@ -62,7 +62,7 @@ static struct delayed_work debounce_work_b1;
 static struct delayed_work debounce_work_b2;
 static int irq_b1 = -1, irq_b2 = -1;
 
-static int debounce = 50;
+static int debounce = 200;
 
 module_param(debounce, int, S_IRUGO);
 

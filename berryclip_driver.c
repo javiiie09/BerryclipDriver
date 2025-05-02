@@ -62,7 +62,9 @@ static struct delayed_work debounce_work_b1;
 static struct delayed_work debounce_work_b2;
 static int irq_b1 = -1, irq_b2 = -1;
 
-static int debounce_time_ms = 50;
+static int debounce = 50;
+
+module_param(debounce, int, S_IRUGO)
 
 
 // === LEDS DEVICE FUNCTIONS ===
@@ -83,8 +85,7 @@ static ssize_t leds_write(struct file *file, const char __user *buf, size_t len,
     if(*ppos == 0) *ppos+=1;
     else return len;
 
-    if(copy_from_user(&val, buf, 1))
-	return -EFAULT;
+    if(copy_from_user(&val, buf, 1)) return -EFAULT;
 
     uint8_t type = (val & 0xC0) >> 6;
     uint8_t bits = val & 0x3F;
@@ -97,7 +98,7 @@ static ssize_t leds_write(struct file *file, const char __user *buf, size_t len,
     }
 
     for(int i = 0; i < ARRAY_SIZE(leds_pin); ++i){
-	gpio_set_value(GPIO_DEFAULT + leds_pin[i], (leds_state >> i) & 1);
+	    gpio_set_value(GPIO_DEFAULT + leds_pin[i], (leds_state >> i) & 1);
     }
 
     return 1;
@@ -108,9 +109,9 @@ static ssize_t leds_write(struct file *file, const char __user *buf, size_t len,
 static int buttons_open(struct inode *inode, struct file *flip)
 {
     if(flip->f_flags & O_NONBLOCK){
-	if(down_trylock(&buttons_sem)) return -EBUSY;
+	    if(down_trylock(&buttons_sem)) return -EBUSY;
     }else{
-	if(down_interruptible(&buttons_sem)) return -ERESTARTSYS;
+	    if(down_interruptible(&buttons_sem)) return -ERESTARTSYS;
     }
     return 0;
 }
@@ -124,11 +125,13 @@ static int buttons_release(struct inode *inode, struct file *flip)
 static ssize_t buttons_read(struct file *file, char __user *buf, size_t len, loff_t *ppos)
 {
     if(buffer_head == buffer_tail){
-	if(file->f_flags & O_NONBLOCK) return -EAGAIN;
+	    if(file->f_flags & O_NONBLOCK) return -EAGAIN;
 
-	if(wait_event_interruptible(buttons_waitqueue, buffer_head != buffer_tail)) return -ERESTARTSYS;
+	    if(wait_event_interruptible(buttons_waitqueue, buffer_head != buffer_tail)) return -ERESTARTSYS;
     }
+
     if(len < 1) return -EINVAL;
+    
     if(copy_to_user(buf, &buffer[buffer_tail], 1)) return -EFAULT;
 
     buffer_tail = (buffer_tail + 1) % sizeof(buffer);
@@ -198,17 +201,17 @@ static struct miscdevice speaker_dev =
     .mode       = S_IWUGO,
 };
 
-// === IRQ AND WORKQUEUE FUNCTIONS ===
+// ========= IRQ AND WORKQUEUE FUNCTIONS =========
 
 static irqreturn_t button1_irq_handler(int irq, void *dev_id)
 {
-    if(buttons_wq) queue_delayed_work(buttons_wq, &debounce_work_b1, msecs_to_jiffies(debounce_time_ms));
+    if(buttons_wq) queue_delayed_work(buttons_wq, &debounce_work_b1, msecs_to_jiffies(debounce));
     return IRQ_HANDLED;
 }
 
 static irqreturn_t button2_irq_handler(int irq, void *dev_id)
 {
-    if(buttons_wq) queue_delayed_work(buttons_wq, &debounce_work_b2, msecs_to_jiffies(debounce_time_ms));
+    if(buttons_wq) queue_delayed_work(buttons_wq, &debounce_work_b2, msecs_to_jiffies(debounce));
     return IRQ_HANDLED;
 }
 
@@ -216,10 +219,10 @@ static void debounce_work_func_b1(struct work_struct *work)
 {
 
     if(!gpio_get_value(GPIO_DEFAULT + GPIO_BUTTON1)){
-	spin_lock(&buffer_lock);
+	    spin_lock(&buffer_lock);
     	buffer[buffer_head++] = '1';
-	buffer_head %= BUTTONS_BUFF_SIZE;
-	spin_unlock(&buffer_lock);
+	    buffer_head %= BUTTONS_BUFF_SIZE;
+	    spin_unlock(&buffer_lock);
     }
     wake_up_interruptible(&buttons_waitqueue);
 }
@@ -227,56 +230,56 @@ static void debounce_work_func_b1(struct work_struct *work)
 static void debounce_work_func_b2(struct work_struct *work)
 {
     if(!gpio_get_value(GPIO_DEFAULT + GPIO_BUTTON2)){
-	spin_lock(&buffer_lock);
+	    spin_lock(&buffer_lock);
     	buffer[buffer_head++] = '2';
-	buffer_head %= BUTTONS_BUFF_SIZE;
+	    buffer_head %= BUTTONS_BUFF_SIZE;
     	spin_unlock(&buffer_lock);
     }
     wake_up_interruptible(&buttons_waitqueue);
 }
 
 
-// === DEVICES CONFIGURATION ===
+// ========= DEVICES CONFIGURATION =========
 
 static int r_devices_config(void)
 {
     int ret = 0;
     ret = misc_register(&leds_dev);
     if(ret < 0){
-	printk(KERN_ERR "misc_register for leds device failed\n");
-	return ret;
+	    printk(KERN_ERR "misc_register for leds device failed\n");
+	    return ret;
     }else{
-	printk(KERN_NOTICE "misc_register OK... leds device minor=%d\n", leds_dev.minor);
+	    printk(KERN_NOTICE "misc_register OK... leds device minor=%d\n", leds_dev.minor);
     }
 
     ret = misc_register(&buttons_dev);
     if(ret < 0){
-	printk(KERN_ERR "misc_register for buttons device failed\n");
-	misc_deregister(&leds_dev);
-	return ret;
+	    printk(KERN_ERR "misc_register for buttons device failed\n");
+	    misc_deregister(&leds_dev);
+	    return ret;
     }else{
-	printk(KERN_NOTICE "misc_register OK... buttons device minor=%d\n", buttons_dev.minor);
+	    printk(KERN_NOTICE "misc_register OK... buttons device minor=%d\n", buttons_dev.minor);
     }
 
     ret = misc_register(&speaker_dev);
     if(ret < 0){
-	printk(KERN_ERR "misc_register for speaker device failed\n");
-	misc_deregister(&buttons_dev);
-	misc_deregister(&leds_dev);
-	return ret;
+        printk(KERN_ERR "misc_register for speaker device failed\n");
+        misc_deregister(&buttons_dev);
+        misc_deregister(&leds_dev);
+        return ret;
     }else{
-	printk(KERN_NOTICE "misc_register OK... speaker device minor=%d\n", speaker_dev.minor);
+	    printk(KERN_NOTICE "misc_register OK... speaker device minor=%d\n", speaker_dev.minor);
     }
 
     return ret;
 }
 
-// === GPIO AND IRQS CONFIGURATION ===
+// ========= GPIO AND IRQS CONFIGURATION =========
 
 static void free_gpios(void)
 {
     for(int i = 0; i < ARRAY_SIZE(gpios); ++i){
-	if(gpios_configured[i]) gpio_free(GPIO_DEFAULT + gpios[i]);
+	    if(gpios_configured[i]) gpio_free(GPIO_DEFAULT + gpios[i]);
     }
 }
 
@@ -301,22 +304,22 @@ static int irqs_config(void)
 
     ret = request_irq(irq_b1, button1_irq_handler, IRQF_TRIGGER_FALLING, "btn1_irq", NULL);
     if(ret < 0){
-	printk(KERN_ERR "berryclip: Error requesting IRQ for button1 %d\n", ret);
-	return ret;
+	    printk(KERN_ERR "berryclip: Error requesting IRQ for button1 %d\n", ret);
+	    return ret;
     }
     ret = request_irq(irq_b2, button2_irq_handler, IRQF_TRIGGER_FALLING, "btn2_irq", NULL);
     if(ret < 0){
-	printk(KERN_ERR "berryclip: Error requesting IRQ for button2 %d\n", ret);
-	free_irq(irq_b1, NULL);
-	return ret;
+	    printk(KERN_ERR "berryclip: Error requesting IRQ for button2 %d\n", ret);
+	    free_irq(irq_b1, NULL);
+	    return ret;
     }
 
     INIT_DELAYED_WORK(&debounce_work_b1, debounce_work_func_b1);
     INIT_DELAYED_WORK(&debounce_work_b2, debounce_work_func_b2);
     if(!(buttons_wq = create_singlethread_workqueue("buttons_wq"))){
-	free_irq(irq_b1, NULL);
-	free_irq(irq_b2, NULL);
-	return -ENOMEM;
+	    free_irq(irq_b1, NULL);
+	    free_irq(irq_b2, NULL);
+	    return -ENOMEM;
     }
     return 0;
 }
@@ -326,21 +329,21 @@ static int GPIO_config(void)
     int ret = 0;
 
     for(int i = 0; i < ARRAY_SIZE(gpios); ++i){
-	ret = gpio_request(GPIO_DEFAULT + gpios[i], gpio_name[i]);
-	if(ret < 0){
-	    printk(KERN_ERR "GPIO request failure: %s with GPIO %d", gpio_name[i], GPIO_DEFAULT + gpios[i]);
-	    return ret;
-	}
-	if(strstr(gpio_name[i], "button") == NULL){
-	    ret = gpio_direction_output(GPIO_DEFAULT + gpios[i], 0);
-	}else{
-	    ret = gpio_direction_input(GPIO_DEFAULT + gpios[i]);
-	}
-	if(ret < 0){
+        ret = gpio_request(GPIO_DEFAULT + gpios[i], gpio_name[i]);
+        if(ret < 0){
+            printk(KERN_ERR "GPIO request failure: %s with GPIO %d", gpio_name[i], GPIO_DEFAULT + gpios[i]);
+            return ret;
+        }
+        if(strstr(gpio_name[i], "button") == NULL){
+            ret = gpio_direction_output(GPIO_DEFAULT + gpios[i], 0);
+        }else{
+            ret = gpio_direction_input(GPIO_DEFAULT + gpios[i]);
+        }
+        if(ret < 0){
             printk(KERN_ERR "GPIO set direction failed: %s with GPIO %d", gpio_name[i], GPIO_DEFAULT + gpios[i]);
             return ret;
         }
-	gpios_configured[i] = 1;
+        gpios_configured[i] = 1;
     }
 
     return 0;
@@ -367,17 +370,17 @@ static void cleanup_driver(void)
 static int init_driver(void)
 {
     int res;
-
-    printk(KERN_NOTICE "%s: module loading\n", KBUILD_MODNAME);
+    
+    printk(KERN_NOTICE "%s: module loading. Debounce time = %d\n", KBUILD_MODNAME, debounce);
 
     if((res = GPIO_config())) {
         printk(KERN_ERR "%s: gpio config failed\n", KBUILD_MODNAME);
-	free_gpios();
+	    free_gpios();
         return res;
     }
 
     if((res = irqs_config())){
-	printk(KERN_ERR "%s: gpio config failed\n", KBUILD_MODNAME);
+	    printk(KERN_ERR "%s: gpio config failed\n", KBUILD_MODNAME);
         return res;
     }
 

@@ -124,11 +124,8 @@ static loff_t leds_lseek(struct file *file, loff_t offset, int whence)
             return -EINVAL;
     }
 
-    if (new_pos != 0)
-        new_pos = 0; //Fuerzo que siempre sea posición 0 
-
-    /*if (new_pos < 0 || new_pos > 1)
-        return -EINVAL; //Para funcionamiento normal de lseek*/
+    if (new_pos < 0 || new_pos > 1)
+        return -EINVAL;
 
     file->f_pos = new_pos;
     return new_pos;

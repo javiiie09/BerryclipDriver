@@ -16,3 +16,8 @@ los milisegundos de debounce (No es obligatorio el parámetro):
 Para eliminar el módulo:
 
 	sudo rmmod berryclip_driver
+
+Para escribir en /dev/leds desde terminal se puede puede hacer uso del
+comando:
+
+	echo -ne "\x00" > /dev/leds
